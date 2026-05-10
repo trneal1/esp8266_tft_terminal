@@ -54,8 +54,8 @@
 //  USER CONFIGURATION  ← edit only this section
 // ═══════════════════════════════════════════════════════════════════════════
 
-static const char*    WIFI_SSID     = "YOUR_SSID";
-static const char*    WIFI_PASSWORD = "YOUR_PASSWORD";
+static const char*    WIFI_SSID     = "TRNNET-2G";
+static const char*    WIFI_PASSWORD = "ripcord1";
 static const uint16_t TCP_PORT      = 8888;
 
 // mDNS / DHCP hostname.  Leave blank ("") for the ESP8266 SDK default.
@@ -69,8 +69,8 @@ static const char*    WIFI_HOSTNAME = "tft-terminal";
 // #define DISPLAY_ST7735        // Adafruit_ST7735    128×128 / 128×160
 
 // ── SPI pin assignments (NodeMCU / Wemos D1 Mini) ───────────────────────
-#define TFT_CS    15  // D8
-#define TFT_DC     2  // D4
+#define TFT_CS    D8  // D8
+#define TFT_DC     D1  // D4
 #define TFT_RST    0  // D3  — use -1 to skip hardware reset
 
 // ── ST7735 init variant ─────────────────────────────────────────────────
@@ -80,7 +80,7 @@ static const char*    WIFI_HOSTNAME = "tft-terminal";
 
 // ── Screen rotation ──────────────────────────────────────────────────────
 // 0=portrait  1=landscape  2=portrait-flip  3=landscape-flip
-#define TFT_ROTATION  1
+#define TFT_ROTATION  3
 
 // ── Backlight PWM pin ────────────────────────────────────────────────────
 // Set to a GPIO number to enable the "brightness" command.
@@ -555,7 +555,7 @@ static void cmdQuery(JsonDocument& /*doc*/) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 static void handleCommand(const char* jsonLine) {
-    StaticJsonDocument<512> doc;
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, jsonLine);
     if (err) {
         snprintf(errBuf, sizeof(errBuf), "JSON parse error: %s", err.c_str());
@@ -591,12 +591,8 @@ static void handleCommand(const char* jsonLine) {
     else if (strcmp(cmd, "query")             == 0) cmdQuery(doc);
     else {
         snprintf(errBuf, sizeof(errBuf),
-                 "unknown cmd \"%s\"; valid: "
-                 "text | clear | bg | fill_rect | rect | fill_circle | circle"
-                 " | hline | vline | line | fill_screen | rotation"
-                 " | pixel | triangle | fill_triangle"
-                 " | rounded_rect | fill_rounded_rect"
-                 " | brightness | ping | query",
+                 "unknown cmd \"%.*s\"",
+                 96,
                  cmd);
         sendError(errBuf);
     }
@@ -666,7 +662,7 @@ void setup() {
 
 void loop() {
     if (!client || !client.connected()) {
-        WiFiClient incoming = server.available();
+        WiFiClient incoming = server.accept();
         if (incoming) {
             client = incoming;
             Serial.print(F("Client: ")); Serial.println(client.remoteIP());
