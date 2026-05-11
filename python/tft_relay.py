@@ -9,6 +9,8 @@ ESP8266 terminal running the firmware in src/main.ino.
 Protocol:
   client -> relay: {"cmd":"text",...}\n
   relay -> client: {"ok":true,"targets":{...}}\n
+  single target state commands also include that target response's fields at
+  the top level, so a normal TFTTerminal client can use the relay directly.
 
 Edit TARGETS below, then run:
   python tft_relay.py
@@ -51,6 +53,13 @@ class TargetResult:
         if self.ok:
             return {"ok": True, "response": self.response}
         return {"ok": False, "error": self.error or "unknown error"}
+
+
+STATE_RESPONSE_FIELDS = {
+    "ping": ("uptime_ms",),
+    "query": ("w", "h", "rotation", "bg", "free_heap"),
+    "rotation": ("w", "h"),
+}
 
 
 class TftTarget:
@@ -190,9 +199,11 @@ class RelayServer:
 
     def forward_to_targets(self, line: bytes) -> dict[str, Any]:
         try:
-            json.loads(line)
+            request = json.loads(line)
         except json.JSONDecodeError as exc:
             return {"ok": False, "error": f"JSON parse error before relay: {exc}"}
+        if not isinstance(request, dict):
+            return {"ok": False, "error": "relay expects a JSON object command"}
 
         results: dict[str, TargetResult] = {}
         threads: list[threading.Thread] = []
@@ -212,10 +223,21 @@ class RelayServer:
             name: result.as_json()
             for name, result in results.items()
         }
-        return {
+        reply: dict[str, Any] = {
             "ok": all(result.ok for result in results.values()),
             "targets": target_json,
         }
+
+        cmd = request.get("cmd")
+        required = STATE_RESPONSE_FIELDS.get(cmd)
+        if required and len(results) == 1:
+            result = next(iter(results.values()))
+            if result.ok and isinstance(result.response, dict):
+                response = result.response
+                if all(field in response for field in required):
+                    reply.update(response)
+
+        return reply
 
     @staticmethod
     def write_json(writer, obj: dict[str, Any]) -> None:

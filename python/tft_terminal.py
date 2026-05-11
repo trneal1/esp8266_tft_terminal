@@ -197,6 +197,7 @@ _DEFAULT_ROTATION = 1
 
 #: Greeting substring recognised as the ESP8266 firmware.
 _VALID_GREETING = "ESP8266 TCP terminal"
+_VALID_RELAY_GREETING = "ESP8266 TFT relay"
 
 
 def _profile_for(name: str) -> DisplayProfile:
@@ -503,10 +504,11 @@ class TFTTerminal:
                 )
             return
 
-        if _VALID_GREETING not in info:
+        if _VALID_GREETING not in info and _VALID_RELAY_GREETING not in info:
             warnings.warn(
                 f"Unexpected firmware greeting: {info!r}. "
-                f"Expected a greeting containing: {_VALID_GREETING!r}. "
+                f"Expected a greeting containing: {_VALID_GREETING!r} "
+                f"or {_VALID_RELAY_GREETING!r}. "
                 f"Continuing — protocol may still be compatible.",
                 stacklevel=3,
             )
@@ -647,6 +649,34 @@ class TFTTerminal:
             raise TFTError(
                 f"Invalid JSON received from firmware: {raw!r} — {exc}"
             ) from exc
+
+    @staticmethod
+    def _unwrap_relay_response(resp: dict, command: str, required: tuple[str, ...]) -> dict:
+        """Return a direct firmware response from either firmware or relay JSON."""
+        if all(key in resp for key in required):
+            return resp
+
+        targets = resp.get("targets")
+        if not isinstance(targets, dict):
+            return resp
+
+        errors = []
+        for name, target in targets.items():
+            if not isinstance(target, dict):
+                errors.append(f"{name}: invalid relay target result")
+                continue
+
+            target_resp = target.get("response")
+            if target.get("ok") is True and isinstance(target_resp, dict):
+                if target_resp.get("ok") is True and all(key in target_resp for key in required):
+                    return target_resp
+                errors.append(f"{name}: missing expected fields")
+                continue
+
+            errors.append(f"{name}: {target.get('error', 'no usable response')}")
+
+        details = "; ".join(errors) if errors else "no targets"
+        raise TFTError(f"Relay response for {command!r} has no usable target response: {details}")
 
     def _send_raw_always(self, payload: dict) -> dict:
         """Send *payload* and **always** block for the response (ignores ack flag)."""
@@ -1055,7 +1085,11 @@ class TFTTerminal:
             raise ValueError(
                 f"Parameter 'r'={rv} is invalid; must be 0, 1, 2, or 3."
             )
-        resp = self._send_raw_always({"cmd": "rotation", "r": rv})
+        resp = self._unwrap_relay_response(
+            self._send_raw_always({"cmd": "rotation", "r": rv}),
+            "rotation",
+            ("w", "h"),
+        )
         if not resp.get("ok", False):
             raise TFTError(
                 f"Firmware error for rotation={rv}: {resp.get('error', 'unknown')}"
@@ -1088,7 +1122,11 @@ class TFTTerminal:
         int
             The device's ``millis()`` value when the ping was processed.
         """
-        resp = self._send_raw_always({"cmd": "ping"})
+        resp = self._unwrap_relay_response(
+            self._send_raw_always({"cmd": "ping"}),
+            "ping",
+            ("uptime_ms",),
+        )
         if not resp.get("ok", False):
             raise TFTError(
                 f"Firmware error for ping: {resp.get('error', 'unknown')}"
@@ -1115,7 +1153,11 @@ class TFTTerminal:
         dict
             Keys: ``w``, ``h``, ``rotation``, ``bg``, ``free_heap``.
         """
-        resp = self._send_raw_always({"cmd": "query"})
+        resp = self._unwrap_relay_response(
+            self._send_raw_always({"cmd": "query"}),
+            "query",
+            ("w", "h", "rotation", "bg", "free_heap"),
+        )
         if not resp.get("ok", False):
             raise TFTError(
                 f"Firmware error for query: {resp.get('error', 'unknown')}"
