@@ -40,7 +40,16 @@ TARGETS = {
 CONNECT_TIMEOUT_SEC = 3.0
 RESPONSE_TIMEOUT_SEC = 5.0
 RECONNECT_DELAY_SEC = 1.0
+TARGET_RECONNECT_POLL_SEC = 2.0
+TARGET_HEALTH_CHECK_LINE = b'{"cmd":"ping"}\n'
 MAX_LINE_BYTES = 4096
+
+
+CLIENT_DISCONNECT_ERRORS = (
+    BrokenPipeError,
+    ConnectionAbortedError,
+    ConnectionResetError,
+)
 
 
 @dataclass
@@ -102,9 +111,20 @@ class TftTarget:
         reader = sock.makefile("r", encoding="utf-8", newline="\n")
 
         # Firmware sends an initial info line after connect.
-        greeting = reader.readline()
-        if not greeting:
-            raise ConnectionError("connected but received no greeting")
+        try:
+            greeting = reader.readline()
+            if not greeting:
+                raise ConnectionError("connected but received no greeting")
+        except Exception:
+            try:
+                reader.close()
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+            raise
 
         self.sock = sock
         self.reader = reader
@@ -147,6 +167,7 @@ class RelayServer:
             name: TftTarget(name, host, port)
             for name, (host, port) in targets.items()
         }
+        self._target_maintainer_started = False
 
     def serve_forever(self) -> None:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
@@ -157,6 +178,7 @@ class RelayServer:
             print("Targets:")
             for name, target in self.targets.items():
                 print(f"  {name}: {target.host}:{target.port}")
+            self.start_target_maintainer()
 
             while True:
                 conn, addr = server.accept()
@@ -167,6 +189,22 @@ class RelayServer:
                 )
                 thread.start()
 
+    def start_target_maintainer(self) -> None:
+        if self._target_maintainer_started:
+            return
+
+        thread = threading.Thread(target=self.maintain_targets, daemon=True)
+        thread.start()
+        self._target_maintainer_started = True
+
+    def maintain_targets(self) -> None:
+        while True:
+            for target in self.targets.values():
+                result = target.send_line(TARGET_HEALTH_CHECK_LINE)
+                if not result.ok and result.error != "reconnect delay active":
+                    print(f"[{target.name}] reconnect/health check failed: {result.error}")
+            time.sleep(TARGET_RECONNECT_POLL_SEC)
+
     def handle_client(self, conn: socket.socket, addr: tuple[str, int]) -> None:
         print(f"[client] connected from {addr[0]}:{addr[1]}")
         with conn:
@@ -174,26 +212,45 @@ class RelayServer:
             reader = conn.makefile("rb")
             writer = conn.makefile("wb")
 
-            self.write_json(writer, {
-                "info": "ESP8266 TFT relay ready",
-                "targets": list(self.targets.keys()),
-            })
+            try:
+                client_alive = self.write_json(writer, {
+                    "info": "ESP8266 TFT relay ready",
+                    "targets": list(self.targets.keys()),
+                })
 
-            while True:
-                line = reader.readline(MAX_LINE_BYTES + 1)
-                if not line:
-                    break
-                if len(line) > MAX_LINE_BYTES:
-                    self.write_json(writer, {
-                        "ok": False,
-                        "error": f"command line too long > {MAX_LINE_BYTES} bytes",
-                    })
-                    continue
-                if line in (b"\n", b"\r\n"):
-                    continue
+                while client_alive:
+                    try:
+                        line = reader.readline(MAX_LINE_BYTES + 1)
+                    except CLIENT_DISCONNECT_ERRORS:
+                        break
+                    except OSError as exc:
+                        print(f"[client] read failed from {addr[0]}:{addr[1]}: {exc}")
+                        break
 
-                result = self.forward_to_targets(line)
-                self.write_json(writer, result)
+                    if not line:
+                        break
+                    if len(line) > MAX_LINE_BYTES:
+                        if not self.write_json(writer, {
+                            "ok": False,
+                            "error": f"command line too long > {MAX_LINE_BYTES} bytes",
+                        }):
+                            break
+                        continue
+                    if line in (b"\n", b"\r\n"):
+                        continue
+
+                    result = self.forward_to_targets(line)
+                    if not self.write_json(writer, result):
+                        break
+            finally:
+                try:
+                    reader.close()
+                except OSError:
+                    pass
+                try:
+                    writer.close()
+                except OSError:
+                    pass
 
         print(f"[client] disconnected from {addr[0]}:{addr[1]}")
 
@@ -240,9 +297,16 @@ class RelayServer:
         return reply
 
     @staticmethod
-    def write_json(writer, obj: dict[str, Any]) -> None:
-        writer.write(json.dumps(obj, separators=(",", ":")).encode("utf-8") + b"\n")
-        writer.flush()
+    def write_json(writer, obj: dict[str, Any]) -> bool:
+        try:
+            writer.write(json.dumps(obj, separators=(",", ":")).encode("utf-8") + b"\n")
+            writer.flush()
+            return True
+        except CLIENT_DISCONNECT_ERRORS:
+            return False
+        except OSError as exc:
+            print(f"[client] write failed: {exc}")
+            return False
 
 
 def parse_target(value: str) -> tuple[str, tuple[str, int]]:
