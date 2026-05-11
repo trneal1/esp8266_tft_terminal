@@ -57,6 +57,7 @@
 static const char*    WIFI_SSID     = "TRNNET-2G";
 static const char*    WIFI_PASSWORD = "ripcord1";
 static const uint16_t TCP_PORT      = 8888;
+static const uint32_t TCP_CLIENT_IDLE_TIMEOUT_MS = 120000UL;
 
 // mDNS / DHCP hostname.  Leave blank ("") for the ESP8266 SDK default.
 static const char*    WIFI_HOSTNAME = "tft-terminal";
@@ -148,6 +149,10 @@ static const char*    WIFI_HOSTNAME = "tft-terminal";
 // ─── Network ─────────────────────────────────────────────────────────────
 static WiFiServer server(TCP_PORT);
 static WiFiClient client;
+static uint32_t lastClientActivityMs = 0;
+static char*  lineBuf = nullptr;
+static size_t lineCap = 0;
+static size_t linePos = 0;
 
 // ─── Runtime state ───────────────────────────────────────────────────────
 static uint16_t bgColor = COLOR_BLACK;
@@ -294,6 +299,21 @@ static void sendError(const char* msg) {
 static void sendOK() {
     if (!client || !client.connected()) return;
     client.println(F("{\"ok\":true}"));
+}
+
+static void closeClient(const __FlashStringHelper* reason) {
+    if (lineBuf || lastClientActivityMs != 0) {
+        Serial.print(F("Client closed: "));
+        Serial.println(reason);
+    }
+    client.stop();
+    if (lineBuf) {
+        free(lineBuf);
+        lineBuf = nullptr;
+    }
+    lineCap = 0;
+    linePos = 0;
+    lastClientActivityMs = 0;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -661,20 +681,22 @@ void setup() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 void loop() {
+    uint32_t now = millis();
+
     if (!client || !client.connected()) {
+        if (lineBuf || lastClientActivityMs != 0) {
+            closeClient(F("disconnected"));
+        }
         WiFiClient incoming = server.accept();
         if (incoming) {
             client = incoming;
+            lastClientActivityMs = now;
             Serial.print(F("Client: ")); Serial.println(client.remoteIP());
             client.println(F("{\"info\":\"ESP8266 TCP terminal v9 ready\"}"));
         }
     }
 
     if (client && client.connected()) {
-        static char*  lineBuf = nullptr;
-        static size_t lineCap = 0;
-        static size_t linePos = 0;
-
         if (!lineBuf) {
             lineCap = 512;
             lineBuf = (char*)malloc(lineCap);
@@ -682,6 +704,7 @@ void loop() {
         }
 
         while (client.available()) {
+            lastClientActivityMs = now = millis();
             char c = client.read();
             if (c == '\r') continue;
             if (c == '\n') {
@@ -706,10 +729,11 @@ void loop() {
             yield();
         }
 
-        if (!client.connected() && lineBuf) {
-            free(lineBuf);
-            lineBuf = nullptr;
-            lineCap = linePos = 0;
+        if (!client.connected()) {
+            closeClient(F("disconnected"));
+        } else if (lastClientActivityMs != 0 &&
+                   (uint32_t)(now - lastClientActivityMs) > TCP_CLIENT_IDLE_TIMEOUT_MS) {
+            closeClient(F("idle timeout"));
         }
     }
 
