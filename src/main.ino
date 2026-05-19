@@ -60,7 +60,7 @@ static const uint16_t TCP_PORT      = 8888;
 static const uint32_t TCP_CLIENT_IDLE_TIMEOUT_MS = 120000UL;
 
 // mDNS / DHCP hostname.  Leave blank ("") for the ESP8266 SDK default.
-static const char*    WIFI_HOSTNAME = "tft-terminal";
+static const char*    WIFI_HOSTNAME = "esp_tft3";
 
 // ── Display selection ────────────────────────────────────────────────────
 // Uncomment EXACTLY ONE:

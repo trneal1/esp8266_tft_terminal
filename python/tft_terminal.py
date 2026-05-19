@@ -121,7 +121,18 @@ Or use the context manager form::
 .. note::
     :meth:`set_rotation`, :meth:`ping`, :meth:`query`, and :meth:`sync`
     **always** read their firmware response regardless of the ack setting,
-    because they depend on the data returned.
+    because they depend on the data returned.  In
+    ``require_responses=False`` mode, :meth:`set_rotation` updates local
+    geometry from the configured display profile, while :meth:`ping`,
+    :meth:`query`, and :meth:`sync` are unavailable.
+
+Use ``require_responses=False`` when connecting to firmware or a relay that
+does not send acknowledgements.  In this mode the initial greeting is not read
+and normal drawing commands are sent fire-and-forget from the first command::
+
+    with TFTTerminal("192.168.1.42", require_responses=False) as tft:
+        tft.clear()
+        tft.text(4, 10, "No firmware replies required", color="cyan", size=2)
 """
 
 from __future__ import annotations
@@ -400,6 +411,10 @@ class TFTTerminal:
         Socket timeout in seconds (default ``5.0``).
     auto_connect:
         If ``True`` (default), connect immediately on construction.
+    require_responses:
+        If ``True`` (default), read and validate the firmware greeting on
+        connect and read command acknowledgements.  If ``False``, do not read
+        the greeting and send normal commands without waiting for responses.
 
     Examples
     --------
@@ -426,11 +441,17 @@ class TFTTerminal:
         height:       Optional[int] = None,
         timeout:      Optional[float] = None,
         auto_connect: bool = True,
+        require_responses: bool = True,
     ) -> None:
         if not isinstance(host, str) or not host:
             raise ValueError("'host' must be a non-empty string.")
         if not isinstance(port, int) or not (1 <= port <= 65535):
             raise ValueError(f"'port' must be an integer in [1, 65535], got {port!r}.")
+        if not isinstance(require_responses, bool):
+            raise TypeError(
+                f"'require_responses' must be a bool, got "
+                f"{type(require_responses).__name__}."
+            )
 
         self._timeout = float(timeout) if timeout is not None else 5.0
 
@@ -457,7 +478,8 @@ class TFTTerminal:
         self._port  = port
         self._sock: Optional[socket.socket] = None
         self._fh:   Optional[object] = None
-        self._ack_enabled: bool = True
+        self._responses_required: bool = require_responses
+        self._ack_enabled: bool = require_responses
 
         if auto_connect:
             self.connect()
@@ -467,7 +489,8 @@ class TFTTerminal:
     def connect(self) -> None:
         """Open the TCP connection to the device.
 
-        Reads and validates the firmware greeting.
+        Reads and validates the firmware greeting unless responses are not
+        required.
 
         Raises
         ------
@@ -481,8 +504,9 @@ class TFTTerminal:
                 (self._host, self._port), timeout=self._timeout
             )
             self._fh = self._sock.makefile("r", encoding="utf-8")
-            greeting = self._readline()
-            self._handle_greeting(greeting)
+            if self._responses_required:
+                greeting = self._readline()
+                self._handle_greeting(greeting)
         except OSError as exc:
             self._sock = None
             self._fh   = None
@@ -601,6 +625,11 @@ class TFTTerminal:
         """``True`` if acknowledgements are being read after each command."""
         return self._ack_enabled
 
+    @property
+    def responses_required(self) -> bool:
+        """``True`` if firmware responses are required for this connection."""
+        return self._responses_required
+
     def set_ack(self, enabled: bool) -> None:
         """Enable or disable firmware acknowledgement checking.
 
@@ -613,6 +642,10 @@ class TFTTerminal:
         if not isinstance(enabled, bool):
             raise TypeError(
                 f"'enabled' must be a bool, got {type(enabled).__name__}."
+            )
+        if enabled and not self._responses_required:
+            raise TFTError(
+                "Cannot enable acknowledgements when require_responses=False."
             )
         self._ack_enabled = enabled
 
@@ -679,7 +712,7 @@ class TFTTerminal:
         raise TFTError(f"Relay response for {command!r} has no usable target response: {details}")
 
     def _send_raw_always(self, payload: dict) -> dict:
-        """Send *payload* and **always** block for the response (ignores ack flag)."""
+        """Send *payload* and block for the response when responses are required."""
         if self._sock is None:
             raise TFTError("Not connected — call connect() first.")
         line = json.dumps(payload, separators=(",", ":")) + "\n"
@@ -687,6 +720,8 @@ class TFTTerminal:
             self._sock.sendall(line.encode("utf-8"))
         except OSError as exc:
             raise TFTError(f"Send error: {exc}") from exc
+        if not self._responses_required:
+            return {}
         return self._readline()
 
     def _send_raw(self, payload: dict) -> dict:
@@ -1085,11 +1120,12 @@ class TFTTerminal:
             raise ValueError(
                 f"Parameter 'r'={rv} is invalid; must be 0, 1, 2, or 3."
             )
-        resp = self._unwrap_relay_response(
-            self._send_raw_always({"cmd": "rotation", "r": rv}),
-            "rotation",
-            ("w", "h"),
-        )
+        raw_resp = self._send_raw_always({"cmd": "rotation", "r": rv})
+        if not self._responses_required:
+            if self._profile is not None:
+                self._width, self._height = self._profile.dimensions_for_rotation(rv)
+            return
+        resp = self._unwrap_relay_response(raw_resp, "rotation", ("w", "h"))
         if not resp.get("ok", False):
             raise TFTError(
                 f"Firmware error for rotation={rv}: {resp.get('error', 'unknown')}"
@@ -1122,11 +1158,10 @@ class TFTTerminal:
         int
             The device's ``millis()`` value when the ping was processed.
         """
-        resp = self._unwrap_relay_response(
-            self._send_raw_always({"cmd": "ping"}),
-            "ping",
-            ("uptime_ms",),
-        )
+        raw_resp = self._send_raw_always({"cmd": "ping"})
+        if not self._responses_required:
+            raise TFTError("ping() is unavailable when require_responses=False.")
+        resp = self._unwrap_relay_response(raw_resp, "ping", ("uptime_ms",))
         if not resp.get("ok", False):
             raise TFTError(
                 f"Firmware error for ping: {resp.get('error', 'unknown')}"
@@ -1153,10 +1188,11 @@ class TFTTerminal:
         dict
             Keys: ``w``, ``h``, ``rotation``, ``bg``, ``free_heap``.
         """
+        raw_resp = self._send_raw_always({"cmd": "query"})
+        if not self._responses_required:
+            raise TFTError("query() is unavailable when require_responses=False.")
         resp = self._unwrap_relay_response(
-            self._send_raw_always({"cmd": "query"}),
-            "query",
-            ("w", "h", "rotation", "bg", "free_heap"),
+            raw_resp, "query", ("w", "h", "rotation", "bg", "free_heap")
         )
         if not resp.get("ok", False):
             raise TFTError(
