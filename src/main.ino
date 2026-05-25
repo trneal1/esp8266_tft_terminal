@@ -72,7 +72,7 @@ static const char*    WIFI_HOSTNAME = "esp_tft3";
 // ── SPI pin assignments (NodeMCU / Wemos D1 Mini) ───────────────────────
 #define TFT_CS    D8  // D8
 #define TFT_DC     D1  // D4
-#define TFT_RST    0  // D3  — use -1 to skip hardware reset
+#define TFT_RST    -1  // D3  — use -1 to skip hardware reset
 
 // ── ST7735 init variant ─────────────────────────────────────────────────
 // Only relevant when DISPLAY_ST7735 is selected.
