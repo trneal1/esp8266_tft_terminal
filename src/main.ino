@@ -121,9 +121,9 @@ static const char*    WIFI_HOSTNAME = "esp_tft3";
   #define COLOR_CYAN     ILI9341_CYAN
 
 #elif defined(DISPLAY_ST7796)
-  #include <Adafruit_ST7796S_kbv.h>
-  static Adafruit_ST7796S_kbv tft(TFT_CS, TFT_DC, TFT_RST);
-  #define DISP_BEGIN()   tft.begin()
+  #include <Adafruit_ST7796S.h>
+  static Adafruit_ST7796S tft(TFT_CS, TFT_DC, TFT_RST);
+  #define DISP_BEGIN()   tft.init()
   #define DISP_NAME      "ST7796"
   #define COLOR_BLACK    ST77XX_BLACK
   #define COLOR_WHITE    ST77XX_WHITE
