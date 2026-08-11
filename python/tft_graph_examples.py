@@ -18,6 +18,7 @@ Usage
     python3 tft_graph_examples.py 192.168.1.42 --demo 11  # bar chart (basic)
     python3 tft_graph_examples.py 192.168.1.42 --demo 14  # area chart
     python3 tft_graph_examples.py 192.168.1.42 --list     # show all demo names
+    python3 tft_graph_examples.py 192.168.1.42 --require-responses
 
 Demo index
 ----------
@@ -343,7 +344,7 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    p.add_argument("host",
+    p.add_argument("host", nargs="?",
                    help="ESP8266 IP address or hostname")
     p.add_argument("--port",    type=int,   default=8888)
     p.add_argument("--width",   type=int,   default=320,
@@ -352,6 +353,8 @@ def main() -> int:
                    help="Display height in pixels (default 240 for ILI9341 landscape)")
     p.add_argument("--timeout", type=float, default=5.0,
                    help="Socket timeout in seconds (default 5)")
+    p.add_argument("--require-responses", action="store_true",
+                   help="Wait for TFTTerminal responses/acks after commands.")
     p.add_argument("--pause",   type=float, default=3.0,
                    help="Seconds to hold each graph on screen (default 3)")
     p.add_argument("--demo",    type=int,   default=None, metavar="N",
@@ -364,6 +367,9 @@ def main() -> int:
         for n, name, _ in DEMOS:
             print(f"  {n:2d}  {name}")
         return 0
+
+    if not args.host:
+        p.error("host is required unless --list is used")
 
     try:
         from tft_terminal import TFTTerminal
@@ -378,6 +384,7 @@ def main() -> int:
             args.host, args.port,
             width=args.width, height=args.height,
             timeout=args.timeout,
+            require_responses=args.require_responses,
         )
     except Exception as exc:
         print(f"Connection failed: {exc}", file=sys.stderr)

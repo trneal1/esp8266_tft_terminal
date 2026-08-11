@@ -13,6 +13,7 @@ Usage
     python3 tft_polar_graph_examples.py 192.168.1.42
     python3 tft_polar_graph_examples.py 192.168.1.42 --demo 1
     python3 tft_polar_graph_examples.py 192.168.1.42 --display st7735 --rotation 1
+    python3 tft_polar_graph_examples.py 192.168.1.42 --require-responses
     python3 tft_polar_graph_examples.py --list
 
 Demo index
@@ -192,6 +193,8 @@ def main() -> int:
                         help="Display rotation 0-3 (default: 3)")
     parser.add_argument("--timeout", type=float, default=5.0,
                         help="Socket timeout in seconds (default: 5)")
+    parser.add_argument("--require-responses", action="store_true",
+                        help="Wait for TFTTerminal responses/acks after commands.")
     parser.add_argument("--pause", type=float, default=3.0,
                         help="Seconds to hold each graph (default: 3)")
     parser.add_argument("--demo", type=int, default=None, metavar="N",
@@ -231,6 +234,7 @@ def main() -> int:
             display=args.display,
             rotation=args.rotation,
             timeout=args.timeout,
+            require_responses=args.require_responses,
         )
     except Exception as exc:
         print(f"Connection failed: {exc}", file=sys.stderr)
